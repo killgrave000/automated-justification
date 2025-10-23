@@ -53,6 +53,16 @@ def extract_ranked_hcpcs(eob_text):
             ranked_codes.append(code)
     return ranked_codes
 
+def extract_billing_provider(eob_text):
+    """Extract Billing Provider name from the EOB text"""
+    match = re.search(r"Billing Provider\s+([A-Z0-9\s&.,'-]+)", eob_text)
+    if match:
+        provider = match.group(1).strip()
+        # Clean up trailing NPI text if present
+        provider = re.sub(r"\s*NPI.*", "", provider).strip()
+        return provider
+    return "Billing Provider not found"
+
 def generate_mrn_summary(prompt_text, mrn_text):
     """Generate structured MRN summary using Gemini 2.5 Flash"""
     genai.configure(api_key=GEMINI_API_KEY.strip())
@@ -90,7 +100,7 @@ def add_markdown_to_docx(doc, markdown_text):
             else:
                 para.add_run(part)
 
-def create_docx(date, hcpcs, drg, mrn_summary):
+def create_docx(date, hcpcs, drg, billing_provider, mrn_summary):
     """Create Word document output with bold formatting"""
     doc = Document()
     doc.add_heading("BCBS Justification for IDR", level=1)
@@ -101,6 +111,7 @@ def create_docx(date, hcpcs, drg, mrn_summary):
         f"HCPCS Codes (7/8/9 only, ranked as per EOB): {', '.join(hcpcs) if hcpcs else 'None found'}"
     )
     doc.add_paragraph(f"DRG Code: {drg}")
+    doc.add_paragraph(f"Billing Provider: {billing_provider}")
 
     doc.add_heading("Patient Acuity & Complexity of Care", level=2)
     add_markdown_to_docx(doc, mrn_summary)
@@ -110,14 +121,15 @@ def create_docx(date, hcpcs, drg, mrn_summary):
     output.seek(0)
     return output
 
-def create_text_output(date, hcpcs, drg, mrn_summary):
+def create_text_output(date, hcpcs, drg, billing_provider, mrn_summary):
     """Return rich text formatted justification for display"""
     text = (
         f"**BCBS Justification for IDR**\n\n"
         f"**Claim Information**\n"
         f"**Date of Service:** {date}\n"
         f"**HCPCS Codes (7/8/9 only, ranked as per EOB):** {', '.join(hcpcs) if hcpcs else 'None found'}\n"
-        f"**DRG Code:** {drg}\n\n"
+        f"**DRG Code:** {drg}\n"
+        f"**Billing Provider:** {billing_provider}\n\n"
         f"**Patient Acuity & Complexity of Care**\n{mrn_summary}\n"
     )
     return text
@@ -137,22 +149,17 @@ if st.button("🚀 Run Automation"):
                 prompt_text = prompt_file.read().decode("utf-8")
 
                 # Parse fields
-                date_of_service = find_field(
-                    r"Service Dates\s+(\d{2}/\d{2}/\d{4})", eob_text, "Date"
-                )
+                date_of_service = find_field(r"Service Dates\s+(\d{2}/\d{2}/\d{4})", eob_text, "Date")
                 hcpcs_codes = extract_ranked_hcpcs(eob_text)
                 drg_code = find_field(r"DRG Code\s+(\d+)", eob_text, "DRG Code")
+                billing_provider = extract_billing_provider(eob_text)
 
                 # Generate formatted MRN summary
                 mrn_summary = generate_mrn_summary(prompt_text, mrn_text)
 
                 # Create outputs
-                output_doc = create_docx(
-                    date_of_service, hcpcs_codes, drg_code, mrn_summary
-                )
-                text_output = create_text_output(
-                    date_of_service, hcpcs_codes, drg_code, mrn_summary
-                )
+                output_doc = create_docx(date_of_service, hcpcs_codes, drg_code, billing_provider, mrn_summary)
+                text_output = create_text_output(date_of_service, hcpcs_codes, drg_code, billing_provider, mrn_summary)
 
                 st.success("✅ Automation complete!")
 
