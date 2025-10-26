@@ -17,7 +17,19 @@ st.session_state.setdefault("download_ready", False)
 # CONFIGURATION
 # -----------------------------
 GEMINI_API_KEY = "AIzaSyAKbtJyypvjhUii916BcqpAHeprwZWW3Dc"  # <-- Replace with your valid key
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+import platform
+import shutil
+
+# Cross-platform Tesseract configuration
+if platform.system() == "Windows":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+else:
+    # On Linux (Streamlit Cloud), find tesseract in PATH
+    tess_path = shutil.which("tesseract")
+    if tess_path:
+        pytesseract.pytesseract.tesseract_cmd = tess_path
+    else:
+        print("⚠️ Tesseract not found on system PATH. OCR fallback may fail.")
 
 # -----------------------------
 # STREAMLIT FRONT END SETUP
