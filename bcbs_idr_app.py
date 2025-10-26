@@ -67,6 +67,7 @@ def find_field(patterns, text, label):
 
 def extract_fields(eob_text):
     """Extract claim fields robustly from EOB text"""
+    # ---------------- DATE OF SERVICE ----------------
     date_patterns = [
         r"Date.?of.?Service[s]?:?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
         r"Service Date[s]?:?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
@@ -75,7 +76,7 @@ def extract_fields(eob_text):
     ]
     date_of_service = find_field(date_patterns, eob_text, "Date")
 
-    # Extract HCPCS/CPT codes
+    # ---------------- HCPCS / CPT CODES ----------------
     lines = eob_text.splitlines()
     ranked_codes = []
     for line in lines:
@@ -84,12 +85,17 @@ def extract_fields(eob_text):
             code = code_match.group(1)
             if re.search(r"[A-Za-z]{2,}\d{4,}", line):
                 continue
-            if re.search(r"\b25\b", line):
-                code = f"{code}-25"
+
+            # Detect emergency codes (99281–99285, 99291–99292)
+            if re.match(r"99(28[1-5]|29[1-2])", code):
+                # Attach modifier -25 only to emergency codes
+                if re.search(r"\b25\b", line):
+                    code = f"{code}-25"
+
             if code not in ranked_codes:
                 ranked_codes.append(code)
 
-    # DRG Code
+    # ---------------- DRG CODE ----------------
     drg_patterns = [
         r"DRG\s*[:#-]?\s*([0-9]{2,4})",
         r"DRG\s*Code\s*[:#-]?\s*([0-9]{2,4})",
@@ -100,13 +106,15 @@ def extract_fields(eob_text):
     ]
     drg_code = find_field(drg_patterns, eob_text, "DRG Code")
 
-    # Billing Provider
+    # ---------------- BILLING PROVIDER ----------------
     billing_patterns = [
         r"Billing Provider(?: Name)?:\s*([A-Za-z0-9\s.,&'\-]+)",
         r"Billing Provider\s+([A-Za-z0-9\s.,&'\-]+)",
         r"Provider Name\s*[:\-]?\s*([A-Za-z0-9\s.,&'\-]+)"
     ]
     billing_provider = find_field(billing_patterns, eob_text, "Billing Provider")
+
+    # Remove trailing noise
     billing_provider = re.sub(
         r"\s*(NPI.*|Other Carrier.*|Rendering Provider.*|Check Date.*|Address.*|City.*|State.*|Zip.*)$",
         "",
@@ -283,7 +291,7 @@ def create_docx_with_full_letter(full_letter):
 # -----------------------------
 # MAIN WORKFLOW
 # -----------------------------
-if st.button("🚀 Run Automation"):
+if st.button("🚀 Run"):
     if not (eob_file and mrn_file and prompt_file):
         st.error("Please upload all required files.")
     else:
