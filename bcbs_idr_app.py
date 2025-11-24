@@ -89,23 +89,34 @@ def extract_fields(eob_text):
     date_of_service = find_field(date_patterns, eob_text, "Date")
 
     # ---------------- HCPCS / CPT CODES ----------------
+    # ---------------- HCPCS / CPT CODES ----------------
+    # ---------------- HCPCS / CPT CODES ----------------
     lines = eob_text.splitlines()
     ranked_codes = []
+
+    # Emergency E/M codes pattern
+    emergency_pattern = r"99(28[1-5]|29[1-2])"
+
     for line in lines:
         code_match = re.search(r"(?:HCPCS|CPT|^|\s)([789]\d{3,4})(?:\s|$)", line)
-        if code_match:
-            code = code_match.group(1)
-            if re.search(r"[A-Za-z]{2,}\d{4,}", line):
-                continue
+        if not code_match:
+            continue
 
-            # Detect emergency codes (99281–99285, 99291–99292)
-            if re.match(r"99(28[1-5]|29[1-2])", code):
-                # Attach modifier -25 only to emergency codes
-                if re.search(r"\b25\b", line):
-                    code = f"{code}-25"
+        code = code_match.group(1)
 
-            if code not in ranked_codes:
-                ranked_codes.append(code)
+        # Ignore mixed alphanumeric strings
+        if re.search(r"[A-Za-z]{2,}\d{4,}", line):
+            continue
+
+        base_code = code
+
+        # Automatically add -25 to ALL emergency codes
+        if re.match(emergency_pattern, base_code):
+            code = f"{base_code}-25"
+
+        if code not in ranked_codes:
+            ranked_codes.append(code)
+
 
     # ---------------- DRG CODE ----------------
     drg_patterns = [
@@ -175,7 +186,7 @@ These omissions contradict the purpose of the NSA’s transparency goals and mat
 This approach also disproportionately harms out-of-network emergency providers, especially those serving underserved populations and operating independently of hospital systems. It reinforces the need for a fair, case-specific evaluation of the actual services rendered, which far exceeds the clinical complexity of what BCBS’s rate represents.
 
 ###  Improper DRG Classification and Non-Compliant Adjudication of Outpatient Emergency Claim
-A thorough assessment of the Explanation of Benefits (EOB) provided by Blue Cross Blue Shield (BCBS) reveals major systemic errors in claim adjudication and misclassification. The claim was submitted using CPT/HCPCS codes—**{hcpcs_list}**—each reflecting distinct, medically necessary procedures performed during the emergency department encounter. Modifier 25 was correctly appended to CPT **{emergency_code_text}**, denoting a significant, separately identifiable evaluation and management (E/M) service delivered in addition to diagnostic testing, as recognized by CMS's National Correct Coding Initiative (NCCI) policy.
+A thorough assessment of the Explanation of Benefits (EOB) provided by Blue Cross Blue Shield (BCBS) reveals major systemic errors in claim adjudication and misclassification. The claim was properly submitted using multiple, separate CPT/HCPCS codes—**{hcpcs_list}**—each reflecting distinct, medically necessary procedures performed during the emergency department encounter. Modifier 25 was correctly appended to CPT **{emergency_code_text}**, denoting a significant, separately identifiable evaluation and management (E/M) service delivered in addition to diagnostic testing, as recognized by CMS's National Correct Coding Initiative (NCCI) policy.
 Nevertheless, the BCBS EOB lists a “Hospital Payment Indicator: R – Case Rate” and assigns Diagnosis Related Group (DRG) **{drg}** with a zero DRG weight (0.00000), indicating the payer’s system improperly converted an outpatient freestanding emergency department (FSED) claim into an inpatient, DRG-based payment methodology. This reclassification is both factually incorrect and in violation of federal billing and adjudication requirements. DRG payment models are explicitly reserved for inpatient hospital stays and are not permitted as a basis for adjudicating outpatient emergency claims billed under CPT/HCPCS coding protocols.
 Applying DRG automation to an FSED claim misrepresents the nature of the service, the facility type, and the context of care delivery, resulting in an unsupported case-rate payment that fails to consider the submitted codes and the true scope of services rendered. This process does not satisfy the legal requirements of 45 C.F.R. § 149.510(c)(4)(iii), which obligate payers to evaluate payment based on the provider’s experience, facility type, service scope, and patient acuity.
 For these reasons, it is imperative that the adjudication and Independent Dispute Resolution (IDR) review privilege only the original CPT/HCPCS codes submitted, accurately representing the outpatient emergency care delivered. Reimbursement must be recalculated according to NSA regulations to guarantee precise, transparent, and equitable payment in line with the intent of the No Surprises Act.
