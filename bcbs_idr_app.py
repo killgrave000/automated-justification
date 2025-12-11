@@ -151,7 +151,7 @@ def extract_fields(eob_text):
 import time
 
 def generate_mrn_summary(prompt_text, mrn_text):
-    """Generate structured MRN summary using Gemini with primary + fallback models."""
+    """Generate structured MRN summary using Gemini (single model, clearer errors)."""
     genai.configure(api_key=GEMINI_API_KEY.strip())
 
     combined_prompt = (
@@ -159,33 +159,23 @@ def generate_mrn_summary(prompt_text, mrn_text):
         "Format output using **bold** headings and line breaks for clarity."
     )
 
-    # Primary: higher free-tier quota model
-    primary_model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash")
 
-    # Fallback: stricter, lower-quota model
-    fallback_model = genai.GenerativeModel("gemini-2.5-flash")
-
-    # Try primary model first
     try:
-        response = primary_model.generate_content(combined_prompt)
+        # Single attempt – if you want, you can wrap this in a retry with sleep
+        response = model.generate_content(combined_prompt)
         return response.text.strip()
 
     except Exception as e:
-        # If it is not clearly a quota / rate limit issue, re-raise
         msg = str(e)
-        if "429" not in msg and "quota" not in msg.lower():
-            raise
-
-        # Quota / rate-limit hit: try fallback model once
-        time.sleep(2)
-        try:
-            response = fallback_model.generate_content(combined_prompt)
-            return response.text.strip()
-        except Exception as e2:
-            # Bubble up a cleaner error so Streamlit shows something readable
+        # Quota / rate limit cases: surface a clean message to the UI
+        if "429" in msg or "quota" in msg.lower():
             raise RuntimeError(
-                f"Gemini models unavailable or quota exhausted. Last error: {e2}"
+                "Gemini quota or rate limit reached for gemini-2.0-flash. "
+                "Slow down requests or move this project to a paid tier."
             )
+        # Any other error: just bubble up
+        raise
 
 
 def generate_bcbs_justification_letter(date, hcpcs, drg, billing_provider, mrn_summary):
