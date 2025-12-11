@@ -151,7 +151,11 @@ def extract_fields(eob_text):
 import time
 
 def generate_mrn_summary(prompt_text, mrn_text):
-    """Generate structured MRN summary using Gemini (single model, clearer errors)."""
+    """
+    Generate structured MRN summary using Gemini.
+    On quota/rate-limit (429) it falls back to a raw MRN extract
+    instead of crashing the app.
+    """
     genai.configure(api_key=GEMINI_API_KEY.strip())
 
     combined_prompt = (
@@ -162,21 +166,24 @@ def generate_mrn_summary(prompt_text, mrn_text):
     model = genai.GenerativeModel("gemini-2.0-flash")
 
     try:
-        # Single attempt – if you want, you can wrap this in a retry with sleep
         response = model.generate_content(combined_prompt)
         return response.text.strip()
 
     except Exception as e:
         msg = str(e)
-        # Quota / rate limit cases: surface a clean message to the UI
-        if "429" in msg or "quota" in msg.lower():
-            raise RuntimeError(
-                "Gemini quota or rate limit reached for gemini-2.0-flash. "
-                "Slow down requests or move this project to a paid tier."
-            )
-        # Any other error: just bubble up
-        raise
 
+        # Quota / rate limit / 429 -> fallback instead of raising
+        if "429" in msg or "quota" in msg.lower():
+            truncated = mrn_text[:4000]  # hard cap so you don't dump a whole chart
+            return (
+                "**MRN Summary (fallback – Gemini quota reached)**\n\n"
+                "Automated summarization was unavailable due to Gemini quota or "
+                "rate-limit. The following is a direct extract from the MRN text:\n\n"
+                f"{truncated}"
+            )
+
+        # Any other error is a real bug -> surface it
+        raise
 
 def generate_bcbs_justification_letter(date, hcpcs, drg, billing_provider, mrn_summary):
     """Build the complete letter text with variables inserted."""
