@@ -35,7 +35,7 @@ else:
 # STREAMLIT FRONT END SETUP
 # -----------------------------
 st.set_page_config(page_title="BCBS Justification for IDR", layout="centered")
-st.title("🏥 BCBS Justification for IDR Generator")
+st.title("🏥 BCBS Justification for Bundle IDR Generator")
 st.write("Upload EOB PDF, MRN PDF, and Prompt TXT file to generate a formatted BCBS justification document.")
 
 # -----------------------------
@@ -78,75 +78,101 @@ def find_field(patterns, text, label):
 
 
 def extract_fields(eob_text):
-    """Extract claim fields robustly from EOB text"""
-    # ---------------- DATE OF SERVICE ----------------
+    """Extract:
+       - emergency 9928x always as -25
+       - all codes starting with 9 always included
+       - codes starting with 7/8/0 included if billed > 400 (local window scan)
+    """
+
+    # -------- DATE --------
     date_patterns = [
-        r"Date.?of.?Service[s]?:?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"Service Date[s]?:?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"Service Dates?\s*[-–]\s*(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"Date Range[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})"
+        r"Service Dates?\s*[:\- ]+\s*(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"Date of Service[s]?\s*[:\- ]+\s*(\d{1,2}/\d{1,2}/\d{2,4})"
     ]
     date_of_service = find_field(date_patterns, eob_text, "Date")
 
-    # ---------------- HCPCS / CPT CODES ----------------
-    # ---------------- HCPCS / CPT CODES ----------------
-    # ---------------- HCPCS / CPT CODES ----------------
     lines = eob_text.splitlines()
-    ranked_codes = []
+    n = len(lines)
+    filtered = []
 
-    # Emergency E/M codes pattern
-    emergency_pattern = r"99(28[1-5]|29[1-2])"
+    # -------- helper: find billed near code --------
+    def max_billed_around(idx, radius=4):
+        start = max(0, idx - radius)
+        end = min(n, idx + radius + 1)
+        max_amt = 0.0
+        for j in range(start, end):
+            for m in re.finditer(r"\$([0-9,]+\.\d{2})", lines[j]):
+                amt = float(m.group(1).replace(",", ""))
+                if amt > max_amt:
+                    max_amt = amt
+        return max_amt
 
-    for line in lines:
-        code_match = re.search(r"(?:HCPCS|CPT|^|\s)([789]\d{3,4})(?:\s|$)", line)
+    # -------- CPT extraction --------
+    for i, line in enumerate(lines):
+
+        # NEW FIX: ignore lines containing mixed alphanumeric identifiers (UUIDs)
+        if re.search(r"[A-Za-z]+[0-9]+[A-Za-z0-9]*", line):
+            continue
+
+        code_match = re.search(r"\b([A-Z]?\d{4,5})\b", line)
         if not code_match:
             continue
 
         code = code_match.group(1)
+        first = code[0]
 
-        # Ignore mixed alphanumeric strings
-        if re.search(r"[A-Za-z]{2,}\d{4,}", line):
+        # Only use 9,7,8,0 codes
+        if first not in ("9", "7", "8", "0"):
             continue
 
-        base_code = code
+        # Emergency → ALWAYS add -25
+        if code.startswith("9928"):
+            out_code = f"{code}-25"
+            if out_code not in filtered:
+                filtered.append(out_code)
+            continue
 
-        # Automatically add -25 to ALL emergency codes
-        if re.match(emergency_pattern, base_code):
-            code = f"{base_code}-25"
+        # All 9xxxx → always include
+        if first == "9":
+            if code not in filtered:
+                filtered.append(code)
+            continue
 
-        if code not in ranked_codes:
-            ranked_codes.append(code)
+        # 7xxxx / 8xxxx / 0xxxx → only if billed > 400
+        max_local_billed = max_billed_around(i, radius=4)
+        if max_local_billed > 400:
+            if code not in filtered:
+                filtered.append(code)
+            continue
 
-
-    # ---------------- DRG CODE ----------------
+    # -------- DRG extraction --------
     drg_patterns = [
-        r"DRG\s*[:#-]?\s*([0-9]{2,4})",
-        r"DRG\s*Code\s*[:#-]?\s*([0-9]{2,4})",
-        r"Diagnosis\s*Related\s*Group[^0-9]*([0-9]{2,4})",
-        r"MS[-\s]*DRG[^0-9]*([0-9]{2,4})",
-        r"DRG[^0-9]*([0-9]{2,4})",
-        r"RelatedGroup[^0-9]*([0-9]{2,4})"
+        r"DRG\s*[:#\-]?\s*([0-9]{2,4})",
+        r"DRG Code\s*[:#\-]?\s*([0-9]{2,4})"
     ]
     drg_code = find_field(drg_patterns, eob_text, "DRG Code")
 
-    # ---------------- BILLING PROVIDER ----------------
+    # -------- BILLING PROVIDER --------
     billing_patterns = [
-        r"Billing Provider Name\s*([A-Za-z0-9\s.,&'\-]+)",
-        r"Billing Provider\s*([A-Za-z0-9\s.,&'\-]+)",
-        r"Provider Name\s*([A-Za-z0-9\s.,&'\-]+)"
+        r"Billing Provider Name\s*([\s\S]{0,200})Billing Provider NPI"
     ]
+    m = re.search(billing_patterns[0], eob_text, re.IGNORECASE)
+    if m:
+        billing_provider = " ".join(m.group(1).split())
+    else:
+        billing_provider = "Billing Provider not found"
 
-    billing_provider = find_field(billing_patterns, eob_text, "Billing Provider")
-
-    # Remove trailing noise
     billing_provider = re.sub(
-        r"\s*(NPI.*|Other Carrier.*|Rendering Provider.*|Check Date.*|Address.*|City.*|State.*|Zip.*)$",
+        r"\s*(NPI.*|Rendering.*|Check Date.*|Address.*|City.*|State.*|Zip.*)$",
         "",
         billing_provider,
         flags=re.IGNORECASE,
     ).strip()
 
-    return date_of_service, ranked_codes, drg_code, billing_provider
+    return date_of_service, filtered, drg_code, billing_provider
+
+
+
 
 
 def generate_mrn_summary(prompt_text, mrn_text):
@@ -172,18 +198,18 @@ def generate_bcbs_justification_letter(date, hcpcs, drg, billing_provider, mrn_s
     emergency_code_text = emergency_codes[0] if emergency_codes else "99284"
 
     return f"""
-This letter is submitted in support of our Independent Dispute Resolution (IDR) request under the No Surprises Act (NSA). We are challenging the reimbursement amount determined by BCBS for the emergency services rendered on **{date}**. The payment issued by BCBS does not adequately reflect the level of care provided, nor does it comply with NSA transparency requirements.
+This letter is submitted in support of our Independent Dispute Resolution (IDR) request under the No Surprises Act (NSA). We are challenging the reimbursement amount determined by BCBS for the emergency services rendered on **{date}**. The bundled payment issued by BCBS does not adequately reflect the level of care provided, nor does it comply with NSA transparency requirements.
 
 We firmly assert that a higher reimbursement is justified based on the significant medical complexity of the case and in accordance with the payment determination criteria outlined in **45 CFR §149.510(c)(4)(iii)**. This includes, but is not limited to, the acuity of the patient’s condition, the scope of services rendered, and the qualifications and experience of the attending provider.
 
 ### QPA Transparency Failure & Arbitrary Methodology
-BCBS’s claims their QPA was calculated using internal, fee-for-service median contracted rates from 2020–2021 and that it excludes bonuses, shared risk, and information derived from databases. However, this explanation fails to meet the disclosure standards under 45 CFR §149.140(a)(12) and CMS NSA FAQ #12, which require the QPA to be provided on a per-service basis and not as a flat amount across unrelated CPT’s.
+BCBS’s claims their QPA was calculated using internal, fee-for-service median contracted rates from 2020–2021 and that it excludes bonuses, shared risk, and information derived from databases. However, this explanation fails to meet the disclosure standards under 45 CFR §149.140(a)(12) and CMS NSA FAQ #12, which require the QPA to be provided on a per-service basis and not as a flat bundled amount across unrelated CPT’s.
 Furthermore, BCBS does not disclose:
 •	The actual median rate or how it was derived
 •	Which specialties or contracts were used
 •	Whether their data reflects ghost rates, $1 floor rates, or stale agreements
 These omissions contradict the purpose of the NSA’s transparency goals and materially impair providers' ability to evaluate fairness and negotiate in good faith. In effect, BCBS is asking IDR entities to accept a "black box" QPA with no line-item disclosure, no clinical justification, and no meaningful accountability.
-This approach also disproportionately harms out-of-network emergency providers, especially those serving underserved populations and operating independently of hospital systems. It reinforces the need for a fair, case-specific evaluation of the actual services rendered, which far exceeds the clinical complexity of what BCBS’s rate represents.
+This approach also disproportionately harms out-of-network emergency providers, especially those serving underserved populations and operating independently of hospital systems. It reinforces the need for a fair, case-specific evaluation of the actual services rendered, which far exceeds the clinical complexity of what BCBS’s bundled rate represents.
 
 ###  Improper DRG Classification and Non-Compliant Adjudication of Outpatient Emergency Claim
 A thorough assessment of the Explanation of Benefits (EOB) provided by Blue Cross Blue Shield (BCBS) reveals major systemic errors in claim adjudication and misclassification. The claim was properly submitted using multiple, separate CPT/HCPCS codes—**{hcpcs_list}**—each reflecting distinct, medically necessary procedures performed during the emergency department encounter. Modifier 25 was correctly appended to CPT **{emergency_code_text}**, denoting a significant, separately identifiable evaluation and management (E/M) service delivered in addition to diagnostic testing, as recognized by CMS's National Correct Coding Initiative (NCCI) policy.
@@ -195,7 +221,7 @@ For these reasons, it is imperative that the adjudication and Independent Disput
 {mrn_summary}
 
 ### Training, Experience & Quality Measures
-**{billing_provider}** operates as a 24/7 Freestanding Emergency Department (FSED), staffed exclusively by board-certified emergency medicine physicians and highly trained nursing professionals dedicated to delivering care that meets or exceeds nationally recognized benchmarks for clinical accuracy, quality, and patient safety. Our commitment to excellence is demonstrated through accreditation by The Joint Commission (Gold Seal of Approval), COLA’s Seal of Quality in Healthcare, and the Center for Improvement in Healthcare Quality (CIHQ)—each reflecting rigorous national compliance standards for safety, quality, and patient outcomes.
+**{billing_provider}** operates as a 24/7 Freestanding Emergency Department (FSED), staffed exclusively by board-certified emergency medicine physicians and highly trained nursing professionals dedicated to delivering care that meets or exceeds nationally recognized benchmarks for clinical accuracy, quality, and patient safety. Our commitment to excellence is demonstrated through accreditation by **The Joint Commission** (Gold Seal of Approval), COLA’s Seal of Quality in Healthcare, and the Center for Improvement in Healthcare Quality (CIHQ)—each reflecting rigorous national compliance standards for safety, quality, and patient outcomes.
 We have made significant capital and operational investments in advanced diagnostic and treatment technologies, including multi-slice CT scanners, digital radiography, and on-site laboratory services, enabling our team to deliver hospital-level emergency care efficiently while reducing the overcrowding burden typical of traditional hospital ERs. FSEDs in Texas are highly regulated under state licensure laws, undergo continuous inspections, and are bound by EMTALA-comparable obligations to ensure all patients receive appropriate emergency care regardless of insurance status or ability to pay. Independent research consistently demonstrates that Texas FSEDs deliver timely, efficient, and medically necessary care comparable to—if not exceeding—hospital-based emergency departments, particularly regarding patient throughput and satisfaction.
 These operational requirements and the higher-acuity case mix we routinely manage are not represented in the payer’s QPA dataset and therefore warrant an upward deviation. The Qualified Payment Amount (QPA) is derived from median in-network rates that often blend hospital outpatient and urgent-care data—entities that do not share our 24/7 readiness, staffing ratios, or advanced clinical scope. Moreover, as a community-based emergency care provider, our case mix includes a broad range of high-acuity and after-hours presentations that cannot safely be managed by “ordinary providers” or urgent care facilities.
 Accordingly, under 45 C.F.R. § 149.510(c)(4)(iii)(C), the certified IDR entity must give substantial weight to the provider’s scope of services, case mix, and clinical capabilities when determining the appropriate out-of-network rate. Our facility’s distinct operational and clinical profile materially differentiates us from the entities included in BCBS’s QPA calculation and establishes that the payer’s presumptive rate fails to capture the true cost and complexity of emergency care delivered in this setting.
@@ -217,7 +243,7 @@ In our region, we serve as a critical access point for emergency care, especiall
 
 ### History of Network Negotiations and Good Faith Efforts
 Over the past several years, we have engaged Blue Cross Blue Shield (BCBS) in multiple efforts to establish a fair and sustainable network agreement. Despite these initiatives, BCBS has either remained unresponsive or proposed contract terms that fall well below reasonable and sustainable reimbursement thresholds. Accepting such rates would directly undermine our ability to maintain 24/7 physician coverage by board-certified emergency medicine providers and to continue investing in the advanced diagnostic and clinical resources required for emergency care delivery.
-As a freestanding emergency department, our statutory duty under the Prudent Layperson Standard is to provide emergency medical care to any patient presenting with symptoms of a potential emergency—without regard to insurance status or network participation. We are not permitted to defer or deny care based on contractual considerations. The lack of a network agreement, therefore, reflects not a refusal by the provider to participate, but rather BCBS’s use of market dominance to impose unsustainable contract terms. Under 45 C.F.R. § 149.510(c)(4)(iii)(B), credible evidence of such contracting history requires the certified IDR entity to consider whether the plan’s conduct has distorted the Qualified Payment Amount (QPA). Because BCBS’s self-reported QPA is derived from an in-network dataset shaped by its own suppressed contract rates, the presumption of QPA accuracy should not apply. Accordingly, this factor supports an upward adjustment to the QPA to reflect fair market value for the emergency services rendered.
+As a freestanding emergency department, our statutory duty under the Prudent Layperson Standard is to provide emergency medical care to any patient presenting with symptoms of a potential emergency—without regard to insurance status or network participation. We are not permitted to defer or deny care based on contractual considerations. The lack of a network agreement, therefore, reflects not a refusal by the provider to participate, but rather BCBS’s use of market dominance to impose unsustainable contract terms. Under **45 C.F.R. § 149.510(c)(4)(iii)(B)**, credible evidence of such contracting history requires the certified IDR entity to consider whether the plan’s conduct has distorted the Qualified Payment Amount (QPA). Because BCBS’s self-reported QPA is derived from an in-network dataset shaped by its own suppressed contract rates, the presumption of QPA accuracy should not apply. Accordingly, this factor supports an upward adjustment to the QPA to reflect fair market value for the emergency services rendered.
 
 ### Other 
 Under 45 C.F.R. § 149.510(c)(4)(iii), the plan’s Qualifying Payment Amount (QPA)—defined as the plan-calculated median in-network rate from 2019, adjusted for inflation—is presumed to represent the appropriate out-of-network (OON) rate. However, this presumption is fundamentally flawed when applied to freestanding emergency departments (FSEDs) due to key methodological and market limitations inherent in the payer’s QPA calculation.
@@ -233,7 +259,7 @@ Therefore, while payers assert their QPA reflects a “fair” OON rate, the und
 None of this evidence relies on prohibited factors under § 149.510(c)(4)(v)—such as billed charges, usual and customary charges, or public payor rates. Instead, these data collectively illustrate that the payer’s QPA fails to capture the genuine cost and complexity of freestanding emergency care. Accordingly, the provider’s submitted rate represents the most accurate, market-reflective reimbursement aligned with the statutory intent and payment-determination framework of the No Surprises Act.
 
 ### Conclusion
-In summary, the evidence clearly demonstrates that Blue Cross Blue Shield’s payment does not reflect the actual complexity or cost of the emergency services rendered, nor does it comply with the transparency and fairness standards established under the No Surprises Act and 45 C.F.R. §§149.140 and 149.510. By failing to disclose per-service QPAs and relying on internal, non-verifiable methodologies, BCBS has deprived the provider of the ability to assess payment accuracy or negotiate in good faith—contrary to both the spirit and letter of federal law.
+In summary, the evidence clearly demonstrates that Blue Cross Blue Shield’s bundled payment does not reflect the actual complexity or cost of the emergency services rendered, nor does it comply with the transparency and fairness standards established under the No Surprises Act and 45 C.F.R. §§149.140 and 149.510. By failing to disclose per-service QPAs and relying on internal, non-verifiable methodologies, BCBS has deprived the provider of the ability to assess payment accuracy or negotiate in good faith—contrary to both the spirit and letter of federal law.
 
 **{billing_provider}** has consistently acted in good faith, delivering board-certified, 24/7 emergency care that meets nationally recognized clinical and quality standards. The services in this case were medically necessary, appropriately coded, and supported by full documentation. BCBS’s reliance on a “case-rate” framework misrepresents the nature of outpatient emergency billing and undermines equitable reimbursement practices.
 We therefore respectfully request that the certified IDR entity issue a determination in favor of the provider’s offer. Such a decision would uphold the statutory payment-determination factors under 45 C.F.R. §149.510(c)(4)(iii), reinforce transparency in payer conduct, and preserve fair access to emergency medical care within the community.
@@ -332,14 +358,14 @@ if st.button("🚀 Run"):
                 output_doc = create_docx_with_full_letter(full_letter)
 
                 st.success("✅ Automation complete!")
-                st.subheader("📜 Generated BCBS Justification Letter")
+                st.subheader("📜 Generated BCBS Bundle Justification Letter")
                 st.markdown(f"<div style='white-space: pre-wrap; font-size:16px;'>{full_letter}</div>", unsafe_allow_html=True)
                 st.session_state["download_ready"] = True
 
                 st.download_button(
                     label="📥 Download as Word Document (.docx)",
                     data=output_doc,
-                    file_name="BCBS_Justification_for_IDR.docx",
+                    file_name="BCBS Justification FOR Bundle IDR with DRG.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True,
                     key="download_docx_button",
