@@ -151,11 +151,7 @@ def extract_fields(eob_text):
 import time
 
 def generate_mrn_summary(prompt_text, mrn_text):
-    """
-    Generate structured MRN summary using Gemini.
-    On quota/rate-limit (429) it falls back to a raw MRN extract
-    instead of crashing the app.
-    """
+    """Generate structured MRN summary using Gemini with primary + fallback models."""
     genai.configure(api_key=GEMINI_API_KEY.strip())
 
     combined_prompt = (
@@ -163,27 +159,34 @@ def generate_mrn_summary(prompt_text, mrn_text):
         "Format output using **bold** headings and line breaks for clarity."
     )
 
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    # Primary: higher free-tier quota model
+    primary_model = genai.GenerativeModel("gemini-2.0-flash")
 
+    # Fallback: stricter, lower-quota model
+    fallback_model = genai.GenerativeModel("gemini-2.5-flash")
+
+    # Try primary model first
     try:
-        response = model.generate_content(combined_prompt)
+        response = primary_model.generate_content(combined_prompt)
         return response.text.strip()
 
     except Exception as e:
+        # If it is not clearly a quota / rate limit issue, re-raise
         msg = str(e)
+        if "429" not in msg and "quota" not in msg.lower():
+            raise
 
-        # Quota / rate limit / 429 -> fallback instead of raising
-        if "429" in msg or "quota" in msg.lower():
-            truncated = mrn_text[:4000]  # hard cap so you don't dump a whole chart
-            return (
-                "**MRN Summary (fallback – Gemini quota reached)**\n\n"
-                "Automated summarization was unavailable due to Gemini quota or "
-                "rate-limit. The following is a direct extract from the MRN text:\n\n"
-                f"{truncated}"
+        # Quota / rate-limit hit: try fallback model once
+        time.sleep(2)
+        try:
+            response = fallback_model.generate_content(combined_prompt)
+            return response.text.strip()
+        except Exception as e2:
+            # Bubble up a cleaner error so Streamlit shows something readable
+            raise RuntimeError(
+                f"Gemini models unavailable or quota exhausted. Last error: {e2}"
             )
 
-        # Any other error is a real bug -> surface it
-        raise
 
 def generate_bcbs_justification_letter(date, hcpcs, drg, billing_provider, mrn_summary):
     """Build the complete letter text with variables inserted."""
