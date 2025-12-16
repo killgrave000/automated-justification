@@ -160,7 +160,7 @@ def generate_mrn_summary(prompt_text, mrn_text):
     )
 
     # Primary: higher free-tier quota model
-    primary_model = genai.GenerativeModel("gemini-2.0-flash")
+    primary_model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
     # Fallback: stricter, lower-quota model
     fallback_model = genai.GenerativeModel("gemini-2.5-flash")
